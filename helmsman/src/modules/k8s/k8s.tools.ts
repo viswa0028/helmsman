@@ -92,7 +92,11 @@ export class K8sTools {
     ctx: ExecutionContext,
   ) {
     const ns = input.namespace ?? 'shop';
-    const dep = await apps.readNamespacedDeployment({ name: input.name, namespace: ns });
+    const deploymentName = input.name ?? (input as any).deployment;
+    if (!deploymentName) {
+      return { ok: false, reason: 'Missing required parameter: name' };
+    }
+    const dep = await apps.readNamespacedDeployment({ name: deploymentName, namespace: ns });
     const current = dep.spec?.replicas ?? 0;
 
     const pdbs = await policy.listNamespacedPodDisruptionBudget({ namespace: ns });
@@ -139,6 +143,7 @@ export class K8sTools {
   async scaleDeployment(
     input: {
       name: string;
+      deployment?: string;
       namespace?: string;
       replicas: number;
       rationale: string;
@@ -147,17 +152,23 @@ export class K8sTools {
     ctx: ExecutionContext,
   ) {
     const ns = input.namespace ?? 'shop';
-
+    const deploymentName = input.name ?? (input as any).deployment ?? (input as any).service;
+    if (!deploymentName) {
+      return { ok: false, rejected: true, reason: 'Missing required parameter: name (deployment name)' };
+    }
     // --- SAFETY GATE (real PDB, enforced in code) ---
     const safety = await this.checkDisruptionSafety(
-      { name: input.name, namespace: ns, targetReplicas: input.replicas },
+      { name: deploymentName, namespace: ns, targetReplicas: input.replicas },
       ctx,
     );
+    if ('ok' in safety) {
+      return { ok: false, rejected: true, reason: safety.reason };
+    }
     if (!safety.decision.allowed) {
       const rec = {
         timestamp: new Date().toISOString(),
         action: 'scale_deployment',
-        target: fqName(ns, input.name),
+        target: fqName(ns, deploymentName),
         detail: { replicas: input.replicas, pdb: safety.pdb },
         proposedBy: input.proposedBy ?? 'FinOpsAgent',
         status: 'REJECTED' as const,
@@ -169,14 +180,14 @@ export class K8sTools {
     }
 
     // --- read-modify-write the scale subresource ---
-    const scale = await apps.readNamespacedDeploymentScale({ name: input.name, namespace: ns });
+    const scale = await apps.readNamespacedDeploymentScale({ name: deploymentName, namespace: ns });
     scale.spec = { replicas: input.replicas };
-    await apps.replaceNamespacedDeploymentScale({ name: input.name, namespace: ns, body: scale });
+    await apps.replaceNamespacedDeploymentScale({ name: deploymentName, namespace: ns, body: scale });
 
     const rec = {
       timestamp: new Date().toISOString(),
       action: 'scale_deployment',
-      target: fqName(ns, input.name),
+      target: fqName(ns, deploymentName),
       detail: { replicas: input.replicas, rationale: input.rationale },
       proposedBy: input.proposedBy ?? 'FinOpsAgent',
       status: 'EXECUTED' as const,
@@ -198,18 +209,21 @@ export class K8sTools {
       .map(([k, v]) => `${k}=${v}`)
       .join(',');
     const rsList = await apps.listNamespacedReplicaSet({ namespace: ns, labelSelector: selector });
-
+    const deploymentName = input.name ?? (input as any).deployment;
+    if (!deploymentName) {
+  return { ok: false, reason: 'Missing required parameter: name' };
+}
     const owned = rsList.items
-      .filter((rs) => rs.metadata?.ownerReferences?.some((o) => o.name === input.name))
+      .filter((rs) => rs.metadata?.ownerReferences?.some((o) => o.name === deploymentName))
       .sort(
         (a, b) =>
           Number(b.metadata?.annotations?.['deployment.kubernetes.io/revision'] ?? 0) -
           Number(a.metadata?.annotations?.['deployment.kubernetes.io/revision'] ?? 0),
       );
     const prev = owned[1];
-    if (!prev) return { ok: false, reason: 'No previous revision to roll back to.' };
+    if (!prev?.spec?.template) return { ok: false, reason: 'No previous revision to roll back to.' };
 
-    dep.spec!.template = prev.spec!.template;
+    dep.spec!.template = prev.spec.template;
     await apps.replaceNamespacedDeployment({ name: input.name, namespace: ns, body: dep });
 
     recordAction({
