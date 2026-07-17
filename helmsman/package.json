@@ -1,0 +1,21 @@
+{
+  "name": "helmsman",
+  "version": "1.0.0",
+  "description": "Autonomous Kubernetes Remediation - MCP server (NitroStack)",
+  "type": "module",
+  "scripts": {
+    "dev": "nitrostack-cli dev",
+    "build": "tsc",
+    "test:safety": "node --test dist/modules/k8s/safety.test.js",
+    "test:safety:fast": "node --experimental-strip-types src/modules/k8s/safety.test.ts"
+  },
+  "dependencies": {
+    "@nitrostack/core": "latest",
+    "@kubernetes/client-node": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^22.0.0"
+  },
+  "engines": { "node": ">=18" }
+}
